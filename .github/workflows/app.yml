@@ -225,7 +225,7 @@ jobs:
             --namespace staging \
             --create-namespace \
             --set image="${{ steps.image.outputs.name }} \
-            --set service.type=LoadBalancer"
+            --set service.type=LoadBalancer
 
   deploy-production:
     name: Deploy to production
@@ -272,4 +272,4 @@ jobs:
             --namespace production \
             --create-namespace \
             --set image="${{ steps.image.outputs.name }} \
-            --set service.type=LoadBalancer"
+            --set service.type=LoadBalancer
