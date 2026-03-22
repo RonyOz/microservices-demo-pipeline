@@ -224,7 +224,7 @@ jobs:
           helm upgrade --install "${{ matrix.service }}" "./${{ matrix.service }}/chart" \
             --namespace staging \
             --create-namespace \
-            --set image="${{ steps.image.outputs.name }} \
+            --set image="${{ steps.image.outputs.name }}" \
             --set service.type=LoadBalancer
 
   deploy-production:
@@ -271,5 +271,5 @@ jobs:
           helm upgrade --install "${{ matrix.service }}" "./${{ matrix.service }}/chart" \
             --namespace production \
             --create-namespace \
-            --set image="${{ steps.image.outputs.name }} \
+            --set image="${{ steps.image.outputs.name }}" \
             --set service.type=LoadBalancer
