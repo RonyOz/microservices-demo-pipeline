@@ -80,13 +80,17 @@ func main() {
 }
 
 func openDatabase() *sql.DB {
-	psqlconn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, dbname)
+	psqlconn := buildPostgresConnString(host, port, user, password, dbname)
 	for {
 		db, err := sql.Open("postgres", psqlconn)
 		if err == nil {
 			return db
 		}
 	}
+}
+
+func buildPostgresConnString(host string, port int, user, password, dbname string) string {
+	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, dbname)
 }
 
 func pingDatabase(db *sql.DB) {

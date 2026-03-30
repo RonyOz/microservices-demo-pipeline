@@ -12,37 +12,27 @@ var express = require('express'),
 
 var port = process.env.PORT || 4000;
 
-io.sockets.on('connection', function (socket) {
-  socket.emit('message', { text: 'Welcome!' });
-
-  socket.on('subscribe', function (data) {
-    socket.join(data.channel);
-  });
-});
-
-var pool = new pg.Pool({
-  connectionString: 'postgres://okteto:okteto@postgresql/votes',
-});
-
-async.retry(
-  { times: 1000, interval: 1000 },
-  function (callback) {
-    pool.connect(function (err, client, done) {
+function startVotePolling(pool) {
+  async.retry(
+    { times: 1000, interval: 1000 },
+    function (callback) {
+      pool.connect(function (err, client) {
+        if (err) {
+          console.error('Waiting for db', err);
+        }
+        callback(err, client);
+      });
+    },
+    function (err, client) {
       if (err) {
-        console.error('Waiting for db', err);
+        console.error('Giving up');
+        return;
       }
-      callback(err, client);
-    });
-  },
-  function (err, client) {
-    if (err) {
-      console.error('Giving up');
-      return;
+      console.log('Connected to db');
+      getVotes(client);
     }
-    console.log('Connected to db');
-    getVotes(client);
-  }
-);
+  );
+}
 
 function getVotes(client) {
   client.query(
@@ -73,26 +63,53 @@ function collectVotesFromResult(result) {
   return votes;
 }
 
-app.use(cookieParser());
-app.use(express.urlencoded({ extended: true }));
-app.use(methodOverride('X-HTTP-Method-Override'));
-app.use(function (req, res, next) {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header(
-    'Access-Control-Allow-Headers',
-    'Origin, X-Requested-With, Content-Type, Accept'
-  );
-  res.header('Access-Control-Allow-Methods', 'PUT, GET, POST, DELETE, OPTIONS');
-  next();
-});
+function configureRoutes() {
+  io.sockets.on('connection', function (socket) {
+    socket.emit('message', { text: 'Welcome!' });
 
-app.use(express.static(__dirname + '/views'));
+    socket.on('subscribe', function (data) {
+      socket.join(data.channel);
+    });
+  });
 
-app.get('/', function (req, res) {
-  res.sendFile(path.resolve(__dirname + '/views/index.html'));
-});
+  app.use(cookieParser());
+  app.use(express.urlencoded({ extended: true }));
+  app.use(methodOverride('X-HTTP-Method-Override'));
+  app.use(function (req, res, next) {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header(
+      'Access-Control-Allow-Headers',
+      'Origin, X-Requested-With, Content-Type, Accept'
+    );
+    res.header('Access-Control-Allow-Methods', 'PUT, GET, POST, DELETE, OPTIONS');
+    next();
+  });
 
-server.listen(port, function () {
-  var port = server.address().port;
-  console.log('App running on port ' + port);
-});
+  app.use(express.static(__dirname + '/views'));
+
+  app.get('/', function (req, res) {
+    res.sendFile(path.resolve(__dirname + '/views/index.html'));
+  });
+}
+
+function startServer() {
+  configureRoutes();
+
+  var pool = new pg.Pool({
+    connectionString: 'postgres://okteto:okteto@postgresql/votes',
+  });
+  startVotePolling(pool);
+
+  server.listen(port, function () {
+    var listenPort = server.address().port;
+    console.log('App running on port ' + listenPort);
+  });
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = {
+  collectVotesFromResult,
+};

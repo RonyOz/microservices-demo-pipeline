@@ -80,7 +80,7 @@ jobs:
   test:
     name: Test changed services
     needs: changes
-    if: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'feature/') && needs.changes.outputs.has_changes == 'true' }}
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.has_changes == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -124,7 +124,7 @@ jobs:
       - name: Test worker service
         if: matrix.service == 'worker'
         working-directory: worker
-        run: go test ./...
+        run: go test -mod=mod ./...
 
   build-and-push:
     name: Build and push images
