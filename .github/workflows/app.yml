@@ -9,7 +9,6 @@ on:
     branches:
       - develop
       - main
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -80,7 +79,7 @@ jobs:
   test:
     name: Test changed services
     needs: changes
-    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.has_changes == 'true' }}
+    if: needs.changes.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -129,7 +128,7 @@ jobs:
   build-and-push:
     name: Build and push images
     needs: changes
-    if: ${{ github.event_name == 'push' && needs.changes.outputs.has_changes == 'true' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') }}
+    if: ${{ github.event_name == 'push' && needs.changes.outputs.has_changes == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -186,7 +185,7 @@ jobs:
     needs:
       - changes
       - build-and-push
-    if: ${{ github.event_name == 'push' && needs.changes.outputs.has_changes == 'true' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') }}
+    if: ${{ github.event_name == 'push' && needs.changes.outputs.has_changes == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -229,6 +228,11 @@ jobs:
           ENVIRONMENT: ${{ steps.deploy_payload.outputs.environment }}
           EVENT_TYPE: ${{ env.OPS_EVENT_TYPE }}
         run: |
+          if [[ "${GITHUB_EVENT_NAME}" != "push" ]]; then
+            echo "Skipping ops trigger because this is not a push event (${GITHUB_EVENT_NAME})."
+            exit 0
+          fi
+
           if [[ -z "$OPS_REPO" ]]; then
             echo "Missing repository variable OPS_REPO (example: my-org/ops-repo)."
             exit 1

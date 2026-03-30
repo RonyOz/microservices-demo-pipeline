@@ -15,7 +15,7 @@ RUN chmod +x /tini
 
 WORKDIR /app
 
-# have nodemon available for local dev use (file watching)
+# Have nodemon available for local dev use (file watching)
 RUN npm install -g nodemon@3.1.7
 
 COPY package*.json ./
