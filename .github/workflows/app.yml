@@ -121,6 +121,11 @@ jobs:
           go-version-file: worker/go.mod
           cache-dependency-path: worker/go.mod
 
+      - name: Download worker dependencies
+        if: matrix.service == 'worker'
+        working-directory: worker
+        run: go mod download
+
       - name: Test worker service
         if: matrix.service == 'worker'
         working-directory: worker
