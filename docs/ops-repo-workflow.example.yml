@@ -1,0 +1,154 @@
+name: Ops Deploy
+
+on:
+  repository_dispatch:
+    types:
+      - app-image-ready
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service name
+        required: true
+        type: choice
+        options:
+          - vote
+          - result
+          - worker
+      image:
+        description: Image repository without tag
+        required: true
+        type: string
+      tag:
+        description: Image tag (example sha-<commit>)
+        required: true
+        type: string
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions:
+  contents: read
+
+env:
+  SERVICE_CHART_ROOT: .
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ops-${{ github.event.client_payload.environment || github.event.inputs.environment }}-${{ github.event.client_payload.service || github.event.inputs.service }}
+      cancel-in-progress: false
+    steps:
+      - name: Resolve event payload
+        id: payload
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SERVICE: ${{ github.event.inputs.service }}
+          INPUT_IMAGE: ${{ github.event.inputs.image }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+          PAYLOAD_SERVICE: ${{ github.event.client_payload.service }}
+          PAYLOAD_IMAGE: ${{ github.event.client_payload.image }}
+          PAYLOAD_TAG: ${{ github.event.client_payload.tag }}
+          PAYLOAD_ENVIRONMENT: ${{ github.event.client_payload.environment }}
+          PAYLOAD_SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+          PAYLOAD_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          EXPECTED_APP_REPO: ${{ vars.APP_REPO }}
+        run: |
+          if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
+            service="$PAYLOAD_SERVICE"
+            image="$PAYLOAD_IMAGE"
+            tag="$PAYLOAD_TAG"
+            environment="$PAYLOAD_ENVIRONMENT"
+            source_repo="$PAYLOAD_SOURCE_REPO"
+            source_sha="$PAYLOAD_SOURCE_SHA"
+          else
+            service="$INPUT_SERVICE"
+            image="$INPUT_IMAGE"
+            tag="$INPUT_TAG"
+            environment="$INPUT_ENVIRONMENT"
+            source_repo="manual"
+            source_sha="${GITHUB_SHA}"
+          fi
+
+          if [[ -n "$EXPECTED_APP_REPO" && "$EVENT_NAME" == "repository_dispatch" && "$source_repo" != "$EXPECTED_APP_REPO" ]]; then
+            echo "Unexpected source repo: $source_repo. Expected: $EXPECTED_APP_REPO"
+            exit 1
+          fi
+
+          if [[ "$service" != "vote" && "$service" != "result" && "$service" != "worker" ]]; then
+            echo "Unsupported service: $service"
+            exit 1
+          fi
+
+          if [[ -z "$image" || -z "$tag" || -z "$environment" ]]; then
+            echo "Missing required deploy values (image/tag/environment)."
+            exit 1
+          fi
+
+          if [[ "$environment" != "staging" && "$environment" != "production" ]]; then
+            echo "Unsupported environment: $environment"
+            exit 1
+          fi
+
+          echo "service=$service" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "environment=$environment" >> "$GITHUB_OUTPUT"
+          echo "source_repo=$source_repo" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout ops repository
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Configure kubeconfig
+        env:
+          ENVIRONMENT: ${{ steps.payload.outputs.environment }}
+          KUBE_CONFIG_STAGING: ${{ secrets.KUBE_CONFIG_STAGING }}
+          KUBE_CONFIG_PRODUCTION: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+        run: |
+          mkdir -p "$HOME/.kube"
+
+          if [[ "$ENVIRONMENT" == "production" ]]; then
+            kube_data="$KUBE_CONFIG_PRODUCTION"
+          else
+            kube_data="$KUBE_CONFIG_STAGING"
+          fi
+
+          if [[ -z "$kube_data" ]]; then
+            echo "Missing kubeconfig secret for environment: $ENVIRONMENT"
+            exit 1
+          fi
+
+          echo "$kube_data" | base64 -d > "$HOME/.kube/config"
+
+      - name: Deploy service with dispatched image tag
+        env:
+          SERVICE: ${{ steps.payload.outputs.service }}
+          IMAGE: ${{ steps.payload.outputs.image }}
+          TAG: ${{ steps.payload.outputs.tag }}
+          ENVIRONMENT: ${{ steps.payload.outputs.environment }}
+        run: |
+          helm upgrade --install "$SERVICE" "${SERVICE_CHART_ROOT}/$SERVICE/chart" \
+            --namespace "$ENVIRONMENT" \
+            --create-namespace \
+            --set image="${IMAGE}:${TAG}" \
+            --set service.type=LoadBalancer
+
+      - name: Summary
+        run: |
+          echo "Deployed infrastructure and service successfully"
+          echo "Service: ${{ steps.payload.outputs.service }}"
+          echo "Image: ${{ steps.payload.outputs.image }}:${{ steps.payload.outputs.tag }}"
+          echo "Environment: ${{ steps.payload.outputs.environment }}"
+          echo "Source: ${{ steps.payload.outputs.source_repo }} @ ${{ steps.payload.outputs.source_sha }}"
