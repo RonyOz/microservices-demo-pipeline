@@ -75,7 +75,7 @@ Note:
 Ops-repo should keep two separate workflows:
 
 - App deploy workflow: triggered by repository_dispatch from app-repo, deploys service using image:tag from payload.
-- Infra deploy workflow: manual or infra-path based, deploys Kafka and PostgreSQL chart.
+- Infra deploy workflow: manual ap infra-path based, deploys Kafka and PostgreSQL chart.
 
 Reference templates created in this repository:
 
