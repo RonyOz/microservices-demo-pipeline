@@ -4,7 +4,7 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "test": "node --check server.js"
+    "test": "node --test test/*.test.js && node --check server.js"
   },
   "author": "",
   "license": "MIT",
