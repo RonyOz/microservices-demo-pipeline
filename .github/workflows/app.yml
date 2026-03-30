@@ -229,6 +229,11 @@ jobs:
           ENVIRONMENT: ${{ steps.deploy_payload.outputs.environment }}
           EVENT_TYPE: ${{ env.OPS_EVENT_TYPE }}
         run: |
+          if [[ "${GITHUB_EVENT_NAME}" != "push" ]]; then
+            echo "Skipping ops trigger because this is not a push event (${GITHUB_EVENT_NAME})."
+            exit 0
+          fi
+
           if [[ -z "$OPS_REPO" ]]; then
             echo "Missing repository variable OPS_REPO (example: my-org/ops-repo)."
             exit 1
