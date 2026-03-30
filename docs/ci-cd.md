@@ -2,7 +2,7 @@
 
 This repository uses a branch-aware GitHub Actions workflow defined in:
 
-- `.github/workflows/microservices-ci-cd.yml`
+- `.github/workflows/app.yml`
 
 ## Service inventory
 
@@ -25,16 +25,23 @@ Build contexts and Dockerfiles:
 
 - `develop` pushes:
   - Build and push images to GitHub Container Registry for changed services only.
-  - Deploy changed services to `staging` namespace using Helm.
+  - After successful build/push stage completion, trigger `ops-repo` with one event per changed service.
+  - Trigger `ops-repo` with a repository dispatch event per changed service.
+  - Event payload includes image repository, unique tag, and target environment (`staging`).
 
 - `main` pushes:
   - Build and push images to GitHub Container Registry for changed services only.
-  - Deploy changed services to `production` namespace using Helm.
+  - After successful build/push stage completion, trigger `ops-repo` with one event per changed service.
+  - Trigger `ops-repo` with a repository dispatch event per changed service.
+  - Event payload includes image repository, unique tag, and target environment (`production`).
 
 ## Required repository secrets
 
-- `KUBE_CONFIG_STAGING`: base64-encoded kubeconfig for staging cluster access.
-- `KUBE_CONFIG_PRODUCTION`: base64-encoded kubeconfig for production cluster access.
+- `OPS_REPO_TOKEN`: token with permission to send repository dispatch events to the ops repository.
+
+## Required repository variables
+
+- `OPS_REPO`: target repository in `owner/repo` format (example: `my-org/microservices-ops`).
 
 GitHub automatically provides `GITHUB_TOKEN` for pushing to GHCR in the same repository scope.
 
@@ -52,13 +59,22 @@ Tags used:
 - `develop` on `develop` branch.
 - `latest` on `main` branch.
 
-## Kubernetes deployment approach
+The dispatch payload to `ops-repo` includes at least:
 
-- Deployments use each service's Helm chart:
-  - `vote/chart`
-  - `result/chart`
-  - `worker/chart`
-- The workflow sets image values dynamically per service per commit.
+- `service`
+- `image`
+- `tag` (`sha-<commit>`)
+- `image_ref`
+- `environment`
+- source metadata (`source_repo`, `source_sha`, `source_ref`, `source_actor`)
+
+## Kubernetes deployment approach (ops-repo)
+
+- Deployment responsibility is delegated to `ops-repo`.
+- `ops-repo` uses separate workflows:
+  - app deploy workflow triggered by `repository_dispatch` from app-repo.
+  - infra deploy workflow for Kafka/PostgreSQL (`infrastructure/k8s`) triggered manually or by infra path changes.
+- `ops-repo` receives the image tag and deploys with Helm using runtime flags (for example `--set image=<repo>:<tag>`), without modifying files in Git.
 
 Reference raw manifest examples are available in `k8s/examples/` for best-practice baselines (replicas, probes, resources).
 
