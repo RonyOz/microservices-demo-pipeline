@@ -1,49 +1,109 @@
-# Microservices Demo
+# Microservices Demo Pipeline
 
-A demo application with Java, Go, Javascript, Kafka and PostgresQL.
+This repository contains the application services for a voting demo and the application-side CI pipeline.
+
+Baseline workflow:
+
+- app-repo builds and pushes images only
+- app-repo triggers ops-repo with the generated immutable tag
+- ops-repo performs deployments with Helm using runtime values (no Git file mutation)
 
 ## Architecture
 
 ![Architecture diagram](architecture.png)
 
-* A front-end web app in [Java](/vote) which lets you vote between Tacos and Burritos
-* A [Kafka](https://bitnami.com/stack/kafka/helm) queue which collects new votes
-* A [Golang](/worker) or worker which consumes votes from Kafka and stores them in PostgresQL
-* A [PostgresQL](https://bitnami.com/stack/postgresql/helm) database
-* A [Node.js](/result) webapp which shows the results of the voting in real time
+- Vote service (Java, Spring Boot): [vote](vote)
+- Result service (Node.js): [result](result)
+- Worker service (Go): [worker](worker)
+- Queue: Kafka
+- Database: PostgreSQL
 
-## Run the demo application in Okteto
+## CI/CD Model
 
-```
-$ git clone https://github.com/okteto/microservices-demo
-$ cd microservices-demo
-$ okteto login
-$ okteto deploy
-```
+This repository uses the workflow in [.github/workflows/app.yml](.github/workflows/app.yml).
 
-## Develop on the Result microservice
+### Branch behavior
 
-```
-$ okteto up result
-```
+- feature/* pull requests:
+  Detect changed services with path filters, run tests only for changed services, and skip build/deploy trigger.
 
-## Develop on the Vote microservice
+- develop pushes:
+  Build and push changed service images, then trigger ops-repo with one dispatch event per changed service for staging.
 
-```
-$ okteto up vote
-```
+- main pushes:
+  Build and push changed service images, then trigger ops-repo with one dispatch event per changed service for production.
 
-## Develop on the Worker microservice
+### Image naming and tags
 
-```
-$ okteto up worker
-$ make start
-```
+- Images:
+  ghcr.io/OWNER/REPO-vote, ghcr.io/OWNER/REPO-result, ghcr.io/OWNER/REPO-worker.
 
-## Notes
+- Tags:
+  sha-COMMIT (immutable deploy tag), develop (develop branch), latest (main branch).
 
-The voting application only accepts one vote per client. It does not register votes if a vote has already been submitted from a client.
+### Dispatch payload to ops-repo
 
-This isn't an example of a properly architected perfectly designed distributed app... it's just a simple
-example of the various types of pieces and languages you might see (queues, persistent data, etc), and how to
-deal with them in Okteto.
+Each dispatch includes at least:
+
+- service
+- image
+- tag
+- image_ref
+- environment
+- source_repo
+- source_sha
+- source_ref
+- source_actor
+
+## Required configuration in app-repo
+
+GitHub Actions secrets:
+
+- OPS_REPO_TOKEN: token with access to send repository dispatch events to ops-repo.
+
+GitHub Actions variables:
+
+- OPS_REPO: target ops repository in owner/repo format.
+
+Note:
+
+- Kubeconfig secrets are no longer required in this repository.
+- Cluster credentials belong to ops-repo, where Helm and kubectl run.
+
+## Ops-repo responsibilities
+
+Ops-repo should keep two separate workflows:
+
+- App deploy workflow: triggered by repository_dispatch from app-repo, deploys service using image:tag from payload.
+- Infra deploy workflow: manual or infra-path based, deploys Kafka and PostgreSQL chart.
+
+Reference templates created in this repository:
+
+- [docs/ops-repo-workflow.example.yml](docs/ops-repo-workflow.example.yml)
+- [docs/ops-repo-infra-workflow.example.yml](docs/ops-repo-infra-workflow.example.yml)
+
+## Services inventory
+
+- vote: Java, Maven, Docker, Helm chart
+- result: Node.js, npm, Docker, Helm chart
+- worker: Go, go modules, Docker, Helm chart
+
+## Build contexts and Dockerfiles
+
+- vote/Dockerfile with context vote/
+- result/Dockerfile with context result/
+- worker/Dockerfile with context worker/
+
+GitHub automatically provides GITHUB_TOKEN for pushing images to GHCR in this repository scope.
+
+## Deployment notes
+
+- Ops-repo deploys with Helm runtime values and does not need Git file mutation.
+- Reference manifests are available in k8s/examples/.
+
+## Suggested structure improvements
+
+- Add a top-level services/ directory and move vote/, result/, and worker/ under it.
+- Keep all charts under a single top-level charts/ directory.
+- Add optional per-service test folders:
+  vote/src/test/java/..., result/test/..., worker/*_test.go
