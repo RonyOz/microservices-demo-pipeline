@@ -127,7 +127,9 @@ jobs:
 
   build-and-push:
     name: Build and push images
-    needs: changes
+    needs:
+      - changes
+      - test
     if: ${{ github.event_name == 'push' && needs.changes.outputs.has_changes == 'true' }}
     runs-on: ubuntu-latest
     strategy:
