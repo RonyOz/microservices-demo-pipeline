@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/IBM/sarama"
+)
 
 func TestBuildPostgresConnString(t *testing.T) {
 	dsn := buildPostgresConnString("db-host", 5432, "user1", "pass1", "votesdb")
@@ -10,3 +14,9 @@ func TestBuildPostgresConnString(t *testing.T) {
 		t.Fatalf("unexpected DSN. got=%q want=%q", dsn, expected)
 	}
 }
+
+func TestVoteConsumerImplementsHandler(t *testing.T) {
+	// Compile-time check: voteConsumer must implement sarama.ConsumerGroupHandler
+	var _ sarama.ConsumerGroupHandler = &voteConsumer{}
+}
+
