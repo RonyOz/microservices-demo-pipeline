@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
-
-	"database/sql"
-	"fmt"
+	"sync"
+	"syscall"
 
 	_ "github.com/lib/pq"
 
@@ -16,67 +18,128 @@ import (
 )
 
 var (
-	brokerList        = kingpin.Flag("brokerList", "List of brokers to connect").Default("kafka:9092").Strings()
-	topic             = kingpin.Flag("topic", "Topic name").Default("votes").String()
-	messageCountStart = kingpin.Flag("messageCountStart", "Message counter start from:").Int()
+	brokerList = kingpin.Flag("brokerList", "List of brokers to connect").Default("kafka:9092").Strings()
+	topic      = kingpin.Flag("topic", "Topic name").Default("votes").String()
 )
 
 const (
-	host     = "postgresql"
-	port     = 5432
-	user     = "okteto"
-	password = "okteto"
-	dbname   = "votes"
+	consumerGroup = "worker-group"
+	host          = "postgresql"
+	port          = 5432
+	user          = "okteto"
+	password      = "okteto"
+	dbname        = "votes"
 )
 
 func main() {
+	kingpin.Parse()
+
 	db := openDatabase()
 	defer db.Close()
 
 	pingDatabase(db)
-
-	dropTableStmt := `DROP TABLE IF EXISTS votes`
-	if _, err := db.Exec(dropTableStmt); err != nil {
-		log.Panic(err)
-	}
 
 	createTableStmt := `CREATE TABLE IF NOT EXISTS votes (id VARCHAR(255) NOT NULL UNIQUE, vote VARCHAR(255) NOT NULL)`
 	if _, err := db.Exec(createTableStmt); err != nil {
 		log.Panic(err)
 	}
 
-	master := getKafkaMaster()
-	defer master.Close()
+	config := sarama.NewConfig()
+	config.Consumer.Group.Rebalance.GroupStrategies = []sarama.BalanceStrategy{sarama.NewBalanceStrategyRoundRobin()}
+	config.Consumer.Offsets.Initial = sarama.OffsetOldest
+	config.Consumer.Return.Errors = true
 
-	consumer, err := master.ConsumePartition(*topic, 0, sarama.OffsetOldest)
+	brokers := *brokerList
+	handler := &voteConsumer{db: db}
+
+	fmt.Printf("Connecting to Kafka consumer group '%s' on topic '%s'...\n", consumerGroup, *topic)
+
+	group, err := newConsumerGroup(brokers, consumerGroup, config)
 	if err != nil {
-		log.Panic(err)
+		log.Panicf("Error creating consumer group: %v", err)
 	}
+	defer group.Close()
 
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt)
-	doneCh := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Track errors
 	go func() {
-		for {
-			select {
-			case err := <-consumer.Errors():
-				fmt.Println(err)
-			case msg := <-consumer.Messages():
-				*messageCountStart++
-				fmt.Printf("Received message: user %s vote %s\n", string(msg.Key), string(msg.Value))
+		for err := range group.Errors() {
+			fmt.Printf("Consumer group error: %v\n", err)
+		}
+	}()
 
-				insertDynStmt := `insert into "votes"("id", "vote") values($1, $2) on conflict(id) do update set vote = $2`
-				if _, err := db.Exec(insertDynStmt, *messageCountStart, string(msg.Value)); err != nil {
-					log.Panic(err)
-				}
-			case <-signals:
-				fmt.Println("Interrupt is detected")
-				doneCh <- struct{}{}
+	// Consume in a goroutine
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			if err := group.Consume(ctx, []string{*topic}, handler); err != nil {
+				fmt.Printf("Error from consumer: %v\n", err)
+			}
+			if ctx.Err() != nil {
+				return
 			}
 		}
 	}()
-	<-doneCh
-	log.Println("Processed", *messageCountStart, "messages")
+
+	fmt.Println("Worker is running. Press Ctrl+C to exit.")
+
+	// Wait for interrupt signal
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	<-signals
+
+	fmt.Println("Interrupt received, shutting down...")
+	cancel()
+	wg.Wait()
+	fmt.Println("Worker stopped.")
+}
+
+// newConsumerGroup retries connecting to Kafka until it succeeds.
+func newConsumerGroup(brokers []string, group string, config *sarama.Config) (sarama.ConsumerGroup, error) {
+	fmt.Println("Waiting for kafka...")
+	for {
+		cg, err := sarama.NewConsumerGroup(brokers, group, config)
+		if err == nil {
+			fmt.Println("Kafka connected!")
+			return cg, nil
+		}
+	}
+}
+
+// voteConsumer implements sarama.ConsumerGroupHandler.
+type voteConsumer struct {
+	db *sql.DB
+}
+
+func (v *voteConsumer) Setup(sarama.ConsumerGroupSession) error {
+	fmt.Println("Consumer group session started — partitions assigned")
+	return nil
+}
+
+func (v *voteConsumer) Cleanup(sarama.ConsumerGroupSession) error {
+	fmt.Println("Consumer group session ended — partitions revoked")
+	return nil
+}
+
+func (v *voteConsumer) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	for msg := range claim.Messages() {
+		voterID := string(msg.Key)
+		vote := string(msg.Value)
+
+		fmt.Printf("Received message: partition=%d offset=%d voter=%s vote=%s\n",
+			msg.Partition, msg.Offset, voterID, vote)
+
+		insertStmt := `INSERT INTO "votes"("id", "vote") VALUES($1, $2) ON CONFLICT(id) DO UPDATE SET vote = $2`
+		if _, err := v.db.Exec(insertStmt, voterID, vote); err != nil {
+			fmt.Printf("Error persisting vote: %v\n", err)
+		}
+
+		session.MarkMessage(msg, "")
+	}
+	return nil
 }
 
 func openDatabase() *sql.DB {
@@ -99,21 +162,6 @@ func pingDatabase(db *sql.DB) {
 		if err := db.Ping(); err == nil {
 			fmt.Println("Postgresql connected!")
 			return
-		}
-	}
-}
-
-func getKafkaMaster() sarama.Consumer {
-	kingpin.Parse()
-	config := sarama.NewConfig()
-	config.Consumer.Return.Errors = true
-	brokers := *brokerList
-	fmt.Println("Waiting for kafka...")
-	for {
-		master, err := sarama.NewConsumer(brokers, config)
-		if err == nil {
-			fmt.Println("Kafka connected!")
-			return master
 		}
 	}
 }
