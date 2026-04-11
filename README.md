@@ -1,109 +1,165 @@
 # Microservices Demo Pipeline
 
-This repository contains the application services for a voting demo and the application-side CI pipeline.
+Este repositorio contiene los servicios de la aplicacion de votacion y el pipeline de CI del app-repo.
+El despliegue se ejecuta en el ops-repo mediante eventos `repository_dispatch` y tags inmutables.
 
-Baseline workflow:
+Flujo base:
 
-- app-repo builds and pushes images only
-- app-repo triggers ops-repo with the generated immutable tag
-- ops-repo performs deployments with Helm using runtime values (no Git file mutation)
+- app-repo construye y publica imagenes.
+- app-repo dispara ops-repo con el tag generado.
+- ops-repo despliega con Helm usando valores en runtime (sin mutar archivos Git).
 
-## Architecture
+## Arquitectura
 
 ![Architecture diagram](architecture.png)
 
 - Vote service (Java, Spring Boot): [vote](vote)
 - Result service (Node.js): [result](result)
 - Worker service (Go): [worker](worker)
-- Queue: Kafka
-- Database: PostgreSQL
+- Mensajeria: Kafka
+- Persistencia: PostgreSQL
 
-## CI/CD Model
+## CI/CD en 30 segundos
 
-This repository uses the workflow in [.github/workflows/app.yml](.github/workflows/app.yml).
+- `pull_request` desde `feature/*`: deteccion de cambios + tests por servicio.
+- `push` a `develop`: build/push de imagenes + trigger a ops-repo para `staging`.
+- `push` a `main`: build/push de imagenes + trigger a ops-repo para `production`.
+- Tag de despliegue recomendado: `sha-<commit>` (inmutable).
 
-### Branch behavior
+Workflow principal de este repo: [.github/workflows/app.yml](.github/workflows/app.yml)
 
-- feature/* pull requests:
-  Detect changed services with path filters, run tests only for changed services, and skip build/deploy trigger.
+## Documentacion general del taller
 
-- develop pushes:
-  Build and push changed service images, then trigger ops-repo with one dispatch event per changed service for staging.
+### 1. Definicion metodologica de trabajo
 
-- main pushes:
-  Build and push changed service images, then trigger ops-repo with one dispatch event per changed service for production.
+El ciclo de vida del desarrollo esta enmarcado bajo Scrum, operando mediante sprints de dos semanas. Todas las arquitecturas y flujos automatizados estan orientados a garantizar que:
 
-### Image naming and tags
+1. Las historias de usuario se validen y desplieguen rapido en staging.
+2. El incremento del producto llegue estable y sin friccion a production al cierre del sprint.
 
-- Images:
-  ghcr.io/OWNER/REPO-vote, ghcr.io/OWNER/REPO-result, ghcr.io/OWNER/REPO-worker.
+El proyecto aplica separacion de responsabilidades (SoC), segmentando el ecosistema en dos repositorios con enfoques distintos: app-repo para software y ops-repo para operaciones.
 
-- Tags:
-  sha-COMMIT (immutable deploy tag), develop (develop branch), latest (main branch).
+### 2. Estrategias de ramificacion
 
-### Dispatch payload to ops-repo
+Debido a que software e infraestructura tienen ciclos de vida y riesgos diferentes, se aplican estrategias especializadas.
 
-Each dispatch includes at least:
+#### 2.1 GitFlow para desarrollo (app-repo)
 
-- service
-- image
-- tag
-- image_ref
-- environment
-- source_repo
-- source_sha
-- source_ref
-- source_actor
+- `main`: estado de produccion.
+- `develop`: estado de staging.
+- `feature/*`: ramas de desarrollo por historia.
+- `hotfix/*`: correcciones urgentes nacidas desde `main` y reintegradas a `main` y `develop`.
 
-## Required configuration in app-repo
+Flujo CI asociado:
 
-GitHub Actions secrets:
+- PR desde `feature/*`: validacion de tests (sin despliegue).
+- Push por merge a `develop` o `main`: build de imagen + publicacion + trigger a despliegue en ops-repo.
 
-- OPS_REPO_TOKEN: token with access to send repository dispatch events to ops-repo.
+#### 2.2 Trunk-Based para operaciones (ops-repo)
 
-GitHub Actions variables:
+- Rama principal unica: `main`.
+- Ramas efimeras de corta vida: `fix/*`, `update/*`.
+- Entorno destino (`staging` o `production`) se inyecta por payload desde app-repo.
+- Validacion de origen (`EXPECTED_APP_REPO`) para reforzar seguridad del disparo.
 
-- OPS_REPO: target ops repository in owner/repo format.
+Detalle operativo: [docs/branching-strategy-dev.md](docs/branching-strategy-dev.md)
 
-Note:
+### 3. Topologia de servicios
 
-- Kubeconfig secrets are no longer required in this repository.
-- Cluster credentials belong to ops-repo, where Helm and kubectl run.
+El sistema consta de cinco actores tecnicos:
 
-## Ops-repo responsibilities
+1. Vote-App (Java/Spring Boot): emisor de datos asincronos.
+2. Worker-App (Go): consumidor y persistencia de votos.
+3. Result-App (Node.js): visualizacion en vivo.
+4. Kafka: puente de mensajeria entre productores y consumidores.
+5. PostgreSQL: fuente de verdad transaccional.
 
-Ops-repo should keep two separate workflows:
+### 4. Patrones de diseno cloud implementados
 
-- App deploy workflow: triggered by repository_dispatch from app-repo, deploys service using image:tag from payload.
-- Infra deploy workflow: manual ap infra-path based, deploys Kafka and PostgreSQL chart.
+#### 4.1 Publisher/Subscriber
 
-Reference templates created in this repository:
+Problema original: acoplamiento fuerte entre vote y worker, con riesgo de timeout y fallas en cascada.
 
-- [docs/ops-repo-workflow.example.yml](docs/ops-repo-workflow.example.yml)
-- [docs/ops-repo-infra-workflow.example.yml](docs/ops-repo-infra-workflow.example.yml)
+Solucion aplicada:
 
-## Services inventory
+- Kafka como broker desacoplando publicacion y consumo.
+- `vote` publica en topic `votes`.
+- `worker` consume asincronamente y persiste.
+- Si worker cae, Kafka retiene mensajes segun politica configurada.
 
-- vote: Java, Maven, Docker, Helm chart
-- result: Node.js, npm, Docker, Helm chart
-- worker: Go, go modules, Docker, Helm chart
+#### 4.2 Competing Consumers
 
-## Build contexts and Dockerfiles
+Problema original: un solo worker no da throughput suficiente en picos de carga.
 
-- vote/Dockerfile with context vote/
-- result/Dockerfile with context result/
-- worker/Dockerfile with context worker/
+Solucion aplicada:
 
-GitHub automatically provides GITHUB_TOKEN for pushing images to GHCR in this repository scope.
+1. Topic `votes` con 3 particiones para paralelismo real.
+2. `worker/chart/values.yaml` con `replicaCount: 3`.
+3. Consumo en Go migrado a `sarama.ConsumerGroup` (`worker-group`) para reparto seguro de particiones sin duplicidad de procesamiento.
 
-## Deployment notes
+#### 4.3 Bulkhead
 
-- Ops-repo deploys with Helm runtime values and does not need Git file mutation.
-- Reference manifests are available in k8s/examples/.
+Problema original: un fallo de staging podia degradar produccion en un cluster compartido.
 
-## Suggested structure improvements
+Solucion aplicada:
 
-- Add a top-level services/ directory and move vote/, result/, and worker/ under it.
-- Keep all charts under a single top-level charts/ directory.
-- Add optional per-service test folders:
-  vote/src/test/java/..., result/test/..., worker/*_test.go
+- Aislamiento logico por namespaces (`staging`, `production`) en AKS.
+- Despliegue con Helm usando `--namespace` y `--create-namespace`.
+
+Riesgo conocido: el namespace no es aislamiento fisico absoluto; sin quotas y politicas de red, un entorno puede tensionar recursos compartidos del cluster.
+
+Detalle arquitectonico: [docs/cloud-design-patterns.md](docs/cloud-design-patterns.md)
+
+### 5. Diseno CI/CD integrado
+
+#### 5.1 Pipeline de integracion (app-repo -> app.yml)
+
+1. Deteccion de cambios y matriz dinamica para ejecutar solo jobs relevantes.
+2. Build y versionado con tag inmutable `sha-<commit>`.
+3. Disparo inter-repositorio via `repository_dispatch` con `OPS_REPO_TOKEN` y payload estructurado (`service`, `image`, `tag`, `environment`, metadatos de origen).
+
+#### 5.2 Pipeline de despliegue (ops-repo -> ops.yml / infra.yml)
+
+- `ops.yml` escucha `repository_dispatch`, valida origen y despliega segun entorno.
+- `infra.yml` despliega y mantiene componentes base de infraestructura (Kafka y PostgreSQL).
+
+### 6. Infraestructura como codigo (IaC)
+
+1. Terraform modela y aprovisiona recursos de cloud/cluster.
+2. Helm modela y despliega servicios y componentes sobre Kubernetes.
+
+### 7. Instrucciones de demostracion en vivo
+
+Secuencia recomendada para evaluacion:
+
+1. Confirmar entorno: `kubectl get pods -n staging`.
+2. Crear rama `feature/*` desde `develop`.
+3. Aplicar cambio pequeno en vote/worker/result.
+4. Push de rama y apertura de PR a `develop`.
+5. Validar checks y hacer merge.
+6. Verificar cadena en Actions (`changes -> build-and-push -> trigger-ops-deploy`) y validar despliegue en staging.
+7. Promover con PR `develop -> main` y validar production.
+
+Guia corta paso a paso: [docs/demo-runbook.md](docs/demo-runbook.md)
+
+## Configuracion requerida en app-repo
+
+Secrets de GitHub Actions:
+
+- `OPS_REPO_TOKEN`: token con permisos para enviar `repository_dispatch` al ops-repo.
+
+Variables de GitHub Actions:
+
+- `OPS_REPO`: repositorio destino en formato `owner/repo`.
+
+Notas:
+
+- No se requiere `KUBECONFIG` en este repo.
+- Credenciales de cluster y ejecucion de Helm/kubectl pertenecen al ops-repo.
+- El ops-repo está en: https://github.com/Juanpapb0401/microservices-demo-pipeline-ops
+
+## Inventario de servicios
+
+- `vote`: Java, Maven, Docker, Helm chart
+- `result`: Node.js, npm, Docker, Helm chart
+- `worker`: Go, go modules, Docker, Helm chart
