@@ -147,6 +147,79 @@ El Bulkhead está directamente alineado con la estrategia GitFlow del `app-repo`
 
 ---
 
+## Patrón 4 — Retry
+
+### Problema que resuelve
+
+En una arquitectura de microservicios distribuidos, los fallos de red son transitorios: un broker de Kafka puede estar temporalmente no disponible durante un reinicio, una elección de líder de partición, o un pico de carga. Sin Retry, el primer intento fallido se convierte en un error permanente para el usuario o en un voto perdido.
+
+### Solución aplicada
+
+Se implementa Retry con **exponential backoff** en los dos puntos donde ocurren conexiones a servicios externos:
+
+**vote (Java) — producer de Kafka:**
+
+El `KafkaTemplate` de Spring reintenta automáticamente el envío si la publicación falla, con 1 segundo de espera entre intentos:
+
+```java
+// vote/src/main/java/com/okteto/vote/kafka/KafkaProducerConfig.java
+configProps.put(ProducerConfig.RETRIES_CONFIG, 3);
+configProps.put(ProducerConfig.RETRY_BACKOFF_MS_CONFIG, 1000);
+```
+
+**worker (Go) — conexión a Kafka y PostgreSQL:**
+
+Las funciones `newConsumerGroup` y `pingDatabase` reintentan con backoff exponencial: el primer reintento espera 1 segundo, el segundo 2, el tercero 4, y así hasta un máximo de 30 segundos:
+
+```go
+// worker/main.go — newConsumerGroup y pingDatabase
+delay := time.Second
+const maxDelay = 30 * time.Second
+for {
+    // intento de conexión
+    if err == nil { return }
+    time.Sleep(delay)
+    if delay < maxDelay { delay *= 2 }
+}
+```
+
+### Flujo del patrón
+
+```
+[vote] intenta publicar en Kafka
+   │
+   ├── éxito → mensaje entregado
+   │
+   └── fallo transitorio
+          │
+          ├── intento 1 → espera 1s
+          ├── intento 2 → espera 1s
+          ├── intento 3 → espera 1s
+          └── fallo permanente → log de advertencia (VoteController.java)
+
+[worker] intenta conectar a Kafka/PostgreSQL al arrancar
+   │
+   ├── éxito → comienza a consumir
+   │
+   └── fallo transitorio
+          ├── intento 1 → espera 1s
+          ├── intento 2 → espera 2s
+          ├── intento 3 → espera 4s
+          └── … (máximo 30s entre intentos)
+```
+
+### Por qué exponential backoff en worker y fixed delay en vote
+
+El `worker` reintenta al arrancar, cuando Kafka puede no estar listo en absoluto — el backoff exponencial evita saturar el broker con intentos rápidos durante el inicio del clúster. El `vote` reintenta en producción durante picos transitorios, donde 3 intentos con 1 segundo de pausa son suficientes sin introducir latencia notable para el usuario.
+
+### Beneficios obtenidos
+
+- Los votos no se pierden ante reinicios breves del broker de Kafka.
+- El worker arranca sin intervención manual aunque PostgreSQL o Kafka tarden en estar listos.
+- El backoff exponencial evita el problema de *thundering herd*: múltiples workers reiniciándose simultáneamente no saturan Kafka con reconexiones simultáneas.
+
+---
+
 ## Resumen comparativo
 
 | Patrón | Categoría | Problema resuelto | Implementación |
@@ -154,4 +227,5 @@ El Bulkhead está directamente alineado con la estrategia GitFlow del `app-repo`
 | Publisher/Subscriber | Mensajería | Acoplamiento entre vote y worker | Kafka en `infrastructure/` |
 | Competing Consumers | Mensajería | Throughput limitado por un solo worker | `replicaCount: 3` en `worker/chart/values.yaml` |
 | Bulkhead | Resiliencia | Fallos de staging afectando production | Namespaces `staging` y `production` en AKS |
+| Retry | Resiliencia | Fallos transitorios de red al publicar y conectar | `KafkaProducerConfig.java` + `main.go` |
 

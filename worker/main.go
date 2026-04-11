@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	_ "github.com/lib/pq"
 
@@ -97,14 +98,22 @@ func main() {
 	fmt.Println("Worker stopped.")
 }
 
-// newConsumerGroup retries connecting to Kafka until it succeeds.
+// newConsumerGroup retries connecting to Kafka with exponential backoff.
+// Retry pattern: starts at 1s, doubles each attempt, caps at 30s.
 func newConsumerGroup(brokers []string, group string, config *sarama.Config) (sarama.ConsumerGroup, error) {
 	fmt.Println("Waiting for kafka...")
+	delay := time.Second
+	const maxDelay = 30 * time.Second
 	for {
 		cg, err := sarama.NewConsumerGroup(brokers, group, config)
 		if err == nil {
 			fmt.Println("Kafka connected!")
 			return cg, nil
+		}
+		fmt.Printf("Kafka not ready, retrying in %s: %v\n", delay, err)
+		time.Sleep(delay)
+		if delay < maxDelay {
+			delay *= 2
 		}
 	}
 }
@@ -156,12 +165,21 @@ func buildPostgresConnString(host string, port int, user, password, dbname strin
 	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, dbname)
 }
 
+// pingDatabase retries the DB connection with exponential backoff.
+// Retry pattern: starts at 1s, doubles each attempt, caps at 30s.
 func pingDatabase(db *sql.DB) {
 	fmt.Println("Waiting for postgresql...")
+	delay := time.Second
+	const maxDelay = 30 * time.Second
 	for {
 		if err := db.Ping(); err == nil {
 			fmt.Println("Postgresql connected!")
 			return
+		}
+		fmt.Printf("PostgreSQL not ready, retrying in %s\n", delay)
+		time.Sleep(delay)
+		if delay < maxDelay {
+			delay *= 2
 		}
 	}
 }
