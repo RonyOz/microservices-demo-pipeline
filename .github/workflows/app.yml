@@ -9,6 +9,12 @@ on:
     branches:
       - develop
       - main
+  workflow_dispatch:
+    inputs:
+      force_all:
+        description: Build and push all services regardless of changes
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -47,11 +53,20 @@ jobs:
       - name: Build matrix for changed services
         id: set-matrix
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE_ALL: ${{ github.event.inputs.force_all }}
           SHARED: ${{ steps.filter.outputs.shared }}
           VOTE: ${{ steps.filter.outputs.vote }}
           RESULT: ${{ steps.filter.outputs.result }}
           WORKER: ${{ steps.filter.outputs.worker }}
         run: |
+          # workflow_dispatch con force_all=true incluye todos sin revisar cambios
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$FORCE_ALL" == "true" ]]; then
+            echo 'services_matrix={"service":["vote","result","worker"]}' >> "$GITHUB_OUTPUT"
+            echo 'has_changes=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           services=()
 
           if [[ "$SHARED" == "true" || "$VOTE" == "true" ]]; then
