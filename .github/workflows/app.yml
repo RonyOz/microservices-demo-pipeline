@@ -145,7 +145,7 @@ jobs:
     needs:
       - changes
       - test
-    if: ${{ github.event_name == 'push' && needs.changes.outputs.has_changes == 'true' }}
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.has_changes == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -202,7 +202,7 @@ jobs:
     needs:
       - changes
       - build-and-push
-    if: ${{ github.event_name == 'push' && needs.changes.outputs.has_changes == 'true' }}
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.has_changes == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -245,8 +245,8 @@ jobs:
           ENVIRONMENT: ${{ steps.deploy_payload.outputs.environment }}
           EVENT_TYPE: ${{ env.OPS_EVENT_TYPE }}
         run: |
-          if [[ "${GITHUB_EVENT_NAME}" != "push" ]]; then
-            echo "Skipping ops trigger because this is not a push event (${GITHUB_EVENT_NAME})."
+          if [[ "${GITHUB_EVENT_NAME}" != "push" && "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]]; then
+            echo "Skipping ops trigger because this is not a push or workflow_dispatch event (${GITHUB_EVENT_NAME})."
             exit 0
           fi
 
