@@ -1,5 +1,10 @@
 package com.okteto.vote.controller;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,10 +20,6 @@ import org.thymeleaf.util.StringUtils;
 
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletResponse;
-import java.util.concurrent.CompletableFuture;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-import java.util.UUID;
 
 @Controller
 public class VoteController {
@@ -91,8 +92,8 @@ public class VoteController {
     }
 
     public static class Vote {
-        private String optionA = "Burritos";
-        private String optionB = "Tacos";
+        private String optionA = "Torta de banano";
+        private String optionB = "Torta de chocolate";
         private String hostname = "unknown";
         private String vote;
 
