@@ -76,18 +76,7 @@ El sistema consta de cinco actores tecnicos:
 
 ### 4. Patrones de diseno cloud implementados
 
-#### 4.1 Publisher/Subscriber
-
-Problema original: acoplamiento fuerte entre vote y worker, con riesgo de timeout y fallas en cascada.
-
-Solucion aplicada:
-
-- Kafka como broker desacoplando publicacion y consumo.
-- `vote` publica en topic `votes`.
-- `worker` consume asincronamente y persiste.
-- Si worker cae, Kafka retiene mensajes segun politica configurada.
-
-#### 4.2 Competing Consumers
+#### 4.1 Competing Consumers
 
 Problema original: un solo worker no da throughput suficiente en picos de carga.
 
@@ -97,7 +86,7 @@ Solucion aplicada:
 2. `worker/chart/values.yaml` con `replicaCount: 3`.
 3. Consumo en Go migrado a `sarama.ConsumerGroup` (`worker-group`) para reparto seguro de particiones sin duplicidad de procesamiento.
 
-#### 4.3 Bulkhead
+#### 4.2 Bulkhead
 
 Problema original: un fallo de staging podia degradar produccion en un cluster compartido.
 
@@ -108,7 +97,17 @@ Solucion aplicada:
 
 Riesgo conocido: el namespace no es aislamiento fisico absoluto; sin quotas y politicas de red, un entorno puede tensionar recursos compartidos del cluster.
 
-Detalle arquitectonico: [docs/cloud-design-patterns.md](docs/cloud-design-patterns.md)
+#### 4.3 Retry
+
+Problema original: en un sistema distribuido, fallos transitorios de red (Kafka/DB no disponible temporalmente) pueden causar errores permanentes o perdida de mensajes.
+
+Solucion aplicada:
+
+- `vote` implementa reintentos en producer Kafka (retries + backoff fijo) para tolerar fallos breves al publicar votos.
+- `worker` implementa reconexion con backoff exponencial al iniciar conexion a Kafka y PostgreSQL.
+- Se reduce riesgo de perdida de votos y se evita saturar dependencias durante reinicios.
+
+Detalle arquitectonico y resiliencia: [docs/cloud-design-patterns.md](docs/cloud-design-patterns.md)
 
 ### 5. Diseno CI/CD integrado
 
